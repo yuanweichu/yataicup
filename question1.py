@@ -2,125 +2,117 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 
-# ==========================================
-# 1. 数据准备 (已包含阿根廷数据)
-# ==========================================
-data_source = {
-    'Year': [2020, 2021, 2022, 2023, 2024],
-
-    # --- 核心自变量 ---
-    'Tariff': [2.44, 3.15, 15.60, 18.20, 20.11],
-    'D_china': [4800, 4500, 3800, 3200, 2900],
-
-    # --- 各国产能 ---
-    'Cap_US': [11000, 10800, 10500, 10300, 10100],
-    'Cap_BR': [12000, 12500, 13000, 13500, 14000],
-    'Cap_AR': [5000, 5100, 4900, 4800, 5000],  # 阿根廷产能
-
-    # --- 各国对华出口量 (Y) ---
-    'EX_US': [5200, 4900, 4100, 3500, 3200],
-    'EX_BR': [6000, 6500, 7500, 8000, 8500],
-    'EX_AR': [800, 850, 900, 880, 920]  # 阿根廷出口量
-}
-
-df = pd.DataFrame(data_source)
-# 构建关税二次项
-df['Tariff_Sq'] = df['Tariff'] ** 2
+DATA_FILE = 'Model_Data_Input.xlsx'
 
 
 class SoybeanRegressionModel:
-    def __init__(self, country_name, y_col, cap_col):
+    def __init__(self, country_name, y_col, cap_col, tariff_col):
         self.country = country_name
         self.y_col = y_col
         self.cap_col = cap_col
+        self.tariff_col = tariff_col
         self.model = None
         self.results = None
-        self.coeffs = {}
 
     def fit(self, data):
-        # 准备 Y 和 X
-        Y = data[self.y_col]
-        X = data[['Tariff', 'Tariff_Sq', 'D_china', self.cap_col]]
-        X = sm.add_constant(X)
+        train_data = data.dropna(subset=[self.y_col])
 
-        # OLS 回归
+        if len(train_data) < 3:
+            print(f"⚠️ {self.country} 训练数据不足，跳过训练。")
+            return None
+
+        Y = train_data[self.y_col]
+
+        X = train_data[[self.tariff_col, 'Tariff_Sq', 'D_china', self.cap_col]]
+
+
+        X = sm.add_constant(X, has_constant='add')
         self.model = sm.OLS(Y, X)
         self.results = self.model.fit()
-        self.coeffs = self.results.params
         return self.results
 
-    def check_constraints(self):
-        print(f"\n=== {self.country} 模型检验结果 ===")
-        beta_1 = self.coeffs.get('Tariff', 0)
-        beta_3 = self.coeffs.get('D_china', 0)
-
-        # 符号检验逻辑
-        if self.country == 'USA':
-            print(f"Tariff系数 < 0 (抑制)? {'✅' if beta_1 < 0 else '❌'} ({beta_1:.4f})")
-        else:
-            # 巴西和阿根廷应该是正数 (替代效应)
-            print(f"Tariff系数 > 0 (替代)? {'✅' if beta_1 > 0 else '❌'} ({beta_1:.4f})")
-
-        print(f"需求系数 > 0? {'✅' if beta_3 > 0 else '❌'} ({beta_3:.4f})")
-
-    def predict_future(self, future_scenario):
-        X_new = future_scenario[['Tariff', 'Tariff_Sq', 'D_china', self.cap_col]]
+    def predict(self, future_row):
+        X_new = future_row[[self.tariff_col, 'Tariff_Sq', 'D_china', self.cap_col]].to_frame().T
         X_new = sm.add_constant(X_new, has_constant='add')
-        return self.results.predict(X_new)
 
 
-# ==========================================
-# 2. 运行模型 (美、巴、阿 三国并列)
-# ==========================================
+        if 'const' not in X_new.columns:
+            X_new.insert(0, 'const', 1.0)
 
-# --- 美国模型 ---
-print("\n>>> 正在训练美国模型...")
-us_model = SoybeanRegressionModel('USA', 'EX_US', 'Cap_US')
-us_model.fit(df)
-us_model.check_constraints()
+        return self.results.predict(X_new).iloc[0]
 
-# --- 巴西模型 ---
-print("\n>>> 正在训练巴西模型...")
-br_model = SoybeanRegressionModel('Brazil', 'EX_BR', 'Cap_BR')
-br_model.fit(df)
-br_model.check_constraints()
 
-# --- [新增] 阿根廷模型 ---
-print("\n>>> 正在训练阿根廷模型...")
-ar_model = SoybeanRegressionModel('Argentina', 'EX_AR', 'Cap_AR')
-ar_model.fit(df)
-ar_model.check_constraints()
+def main():
+    try:
+        df = pd.read_excel(DATA_FILE)
+        print(f"✅ 成功读取数据: {len(df)} 行")
+    except FileNotFoundError:
+        print(f"❌ 错误: 找不到文件 {DATA_FILE}。请先运行生成模板脚本并填好数据。")
+        return
 
-# ==========================================
-# 3. 2025年 预测应用 (包含阿根廷)
-# ==========================================
-print("\n=== 2025-2027 多国出口预测 ===")
 
-# 构造未来情景 (必须包含三国的产能预测)
-future_data = pd.DataFrame({
-    'Year': [2025, 2026, 2027],
-    'Tariff': [25.0, 30.0, 35.0],  # 假设关税
-    'D_china': [2800, 2700, 2600],  # 假设需求
-    'Cap_US': [10000, 9900, 9800],  # 美国产能预测
-    'Cap_BR': [14500, 15000, 15500],  # 巴西产能预测
-    'Cap_AR': [5100, 5200, 5300],  # [新增] 阿根廷产能预测
-    'P_world': [530, 540, 550]  # 价格
-})
-future_data['Tariff_Sq'] = future_data['Tariff'] ** 2
+    df['Tariff_Sq'] = df['Tariff_US'] ** 2
 
-# 分别预测
-pred_us = us_model.predict_future(future_data)
-pred_br = br_model.predict_future(future_data)
-pred_ar = ar_model.predict_future(future_data)  # [新增] 阿根廷预测
 
-# 汇总结果表
-prediction_df = pd.DataFrame({
-    'Year': future_data['Year'],
-    'US_Export': pred_us,
-    'Brazil_Export': pred_br,
-    'Argentina_Export': pred_ar,  # [新增]
-    'US_Value($B)': pred_us * future_data['P_world'] / 10000,
-    'Arg_Value($B)': pred_ar * future_data['P_world'] / 10000  # [新增]
-})
+    future_df = df[df['Year'] == 2025].copy()
 
-print(prediction_df)
+    if future_df.empty:
+        print("❌ 错误: 数据表中没有 2025 年的数据行。")
+        return
+
+    # 检查是否填了必要数据
+    if future_df['D_china'].isnull().any() or future_df['Cap_US'].isnull().any():
+        print("❌ 错误: 2025 年的 D_china (需求) 或 Cap (产能) 为空。请在 Excel 中填入预测值！")
+        return
+
+    print("\n=== 开始模型训练 ===")
+
+
+    models = [
+
+        SoybeanRegressionModel('USA', 'EX_US', 'Cap_US', 'Tariff_US'),
+
+
+        SoybeanRegressionModel('Brazil', 'EX_BR', 'Cap_BR', 'Tariff_US'),
+
+
+        SoybeanRegressionModel('Argentina', 'EX_AR', 'Cap_AR', 'Tariff_US')
+    ]
+    predictions = {}
+
+    for model in models:
+
+        result = model.fit(df)
+        if result:
+            pred_val = model.predict(future_df.iloc[0])
+            predictions[model.country] = max(0, pred_val)
+            print(f"   -> {model.country} 模型训练完成，R2: {result.rsquared:.3f}")
+
+
+    print("\n" + "=" * 30)
+    print("     2025年 预测结果报告")
+    print("=" * 30)
+
+    p_world = future_df.iloc[0]['P_world']
+    if pd.isna(p_world):
+        p_world = 0
+        print("⚠️ 警告: Excel 中未填入 P_world (价格)，出口额将显示为 0。")
+
+    total_vol = 0
+
+    print(f"{'国家':<10} | {'出口量 (万吨)':<15} | {'出口额 (亿美元)':<15}")
+    print("-" * 46)
+
+    for country, vol in predictions.items():
+        val = vol * p_world / 10000
+        print(f"{country:<10} | {vol:<15.2f} | {val:<15.2f}")
+        total_vol += vol
+
+    print("-" * 46)
+    print(f"{'Total':<10} | {total_vol:<15.2f} | {'-':<15}")
+    print("=" * 30)
+
+
+
+if __name__ == "__main__":
+    main()
